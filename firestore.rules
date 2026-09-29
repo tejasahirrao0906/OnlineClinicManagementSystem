@@ -1,0 +1,373 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ================================
+    // ADMIN USERS
+    // ================================
+    match /adminUsers/{adminId} {
+
+      // An admin can read their own admin profile.
+      allow read: if request.auth != null
+                    && request.auth.uid == adminId;
+
+      // Admin accounts cannot be created/modified from the app.
+      allow write: if false;
+    }
+
+
+    // ================================
+    // PATIENT USERS
+    // ================================
+    match /users/{userId} {
+
+      // Users can read only their own profile.
+      // Admins can read all patient profiles.
+      allow read: if request.auth != null
+                  && (
+                    request.auth.uid == userId
+                    ||
+                    (
+                      exists(
+                        /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                      )
+                      && get(
+                        /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                      ).data.role == 'admin'
+                    )
+                  );
+
+      // A user can create only their own patient profile.
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.role == 'patient'
+                    && request.resource.data.name != ''
+                    && request.resource.data.email == request.auth.token.email
+                    && request.resource.data.phone != ''
+                    && request.resource.data.createdAt != null;
+
+      // A patient can update only their own editable profile fields.
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && resource.data.role == 'patient'
+                    && request.resource.data.role == 'patient'
+                    && request.resource.data.email == resource.data.email
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly([
+                           'name',
+                           'phone',
+                           'address',
+                           'updatedAt'
+                         ]);
+
+      // Patient profiles cannot be deleted from the application.
+      allow delete: if false;
+    }
+
+
+      match /doctors/{doctorId} {
+  // Authenticated users can read doctor profiles
+  allow read: if request.auth != null;
+
+  // Only admins can create doctor profiles
+  allow create: if request.auth != null
+                && exists(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                )
+                && get(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                ).data.role == 'admin';
+
+  // Only admins can edit doctor name/specialization
+  allow update: if request.auth != null
+                && exists(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                )
+                && get(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                ).data.role == 'admin'
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly([
+                       'name',
+                       'specialization'
+                     ]);
+
+  // A doctor can link their Firebase Auth UID
+  // only once, using the email already registered by admin.
+  allow update: if request.auth != null
+                && !resource.data.keys().hasAny(['uid'])
+                && resource.data.email == request.auth.token.email
+                && request.resource.data.uid == request.auth.uid
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly([
+                       'uid'
+                     ]);
+
+  // Only admins can delete doctor profiles
+  allow delete: if request.auth != null
+                && exists(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                )
+                && get(
+                  /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                ).data.role == 'admin';
+}
+
+
+    // ================================
+    // APPOINTMENTS
+    // ================================
+    match /appointments/{appointmentId} {
+
+      // Patients can read their own appointments.
+      allow read: if request.auth != null
+                  && resource.data.patientId == request.auth.uid;
+
+      // Doctors can read appointments assigned to them.
+      allow read: if request.auth != null
+                  && exists(
+                    /databases/$(database)/documents/doctors/$(resource.data.doctorId)
+                  )
+                  && get(
+                    /databases/$(database)/documents/doctors/$(resource.data.doctorId)
+                  ).data.uid == request.auth.uid;
+
+      // Admins can read all appointments.
+      allow read: if request.auth != null
+                  && exists(
+                    /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                  )
+                  && get(
+                    /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                  ).data.role == 'admin';
+
+      // Patients can create only their own appointments
+      // and the appointment must match a valid doctor
+      // and appointment slot created in the same transaction.
+      allow create: if request.auth != null
+                    && request.resource.data.patientId == request.auth.uid
+
+                    // Required appointment fields
+                    && request.resource.data.doctorId != ''
+                    && request.resource.data.date != ''
+                    && request.resource.data.time != ''
+                    && request.resource.data.slotId != ''
+
+                    // Selected doctor must exist.
+                    && exists(
+                      /databases/$(database)/documents/doctors/$(request.resource.data.doctorId)
+                    )
+
+                    // Doctor name must match doctor profile.
+                    && request.resource.data.doctorName ==
+                       get(
+                         /databases/$(database)/documents/doctors/$(request.resource.data.doctorId)
+                       ).data.name
+
+                    // Specialization must match doctor profile.
+                    && request.resource.data.specialization ==
+                       get(
+                         /databases/$(database)/documents/doctors/$(request.resource.data.doctorId)
+                       ).data.specialization
+
+                    // Slot must be created in same transaction.
+                    && getAfter(
+                      /databases/$(database)/documents/appointmentSlots/$(request.resource.data.slotId)
+                    ).data.appointmentId == request.resource.id
+
+                    && getAfter(
+                      /databases/$(database)/documents/appointmentSlots/$(request.resource.data.slotId)
+                    ).data.patientId == request.auth.uid
+
+                    && getAfter(
+                      /databases/$(database)/documents/appointmentSlots/$(request.resource.data.slotId)
+                    ).data.doctorId == request.resource.data.doctorId
+
+                    && getAfter(
+                      /databases/$(database)/documents/appointmentSlots/$(request.resource.data.slotId)
+                    ).data.date == request.resource.data.date
+
+                    && getAfter(
+                      /databases/$(database)/documents/appointmentSlots/$(request.resource.data.slotId)
+                    ).data.time == request.resource.data.time;
+
+      // Patients can only cancel their own appointments.
+      allow update: if request.auth != null
+                    && resource.data.patientId == request.auth.uid
+                    && request.resource.data.patientId == resource.data.patientId
+                    && request.resource.data.doctorId == resource.data.doctorId
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['status'])
+                    && request.resource.data.status == 'Cancelled';
+
+      // Doctors can only update the status of appointments
+      // assigned to them.
+      allow update: if request.auth != null
+                    && exists(
+                      /databases/$(database)/documents/doctors/$(resource.data.doctorId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/doctors/$(resource.data.doctorId)
+                    ).data.uid == request.auth.uid
+                    && request.resource.data.patientId == resource.data.patientId
+                    && request.resource.data.doctorId == resource.data.doctorId
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['status']);
+
+      // Admins do not directly modify appointments.
+// The Admin interface is read-only.
+allow update: if false;
+
+      // Appointments cannot be directly deleted.
+      allow delete: if false;
+    }
+
+
+    // ================================
+    // APPOINTMENT SLOTS
+    // ================================
+    match /appointmentSlots/{slotId} {
+
+      // Authenticated users can read booked slots.
+      allow read: if request.auth != null;
+
+      // Slot can only be created as part of a valid
+      // appointment booking transaction.
+      allow create: if request.auth != null
+
+                    // Slot must belong to logged-in patient.
+                    && request.resource.data.patientId == request.auth.uid
+
+                    // Slot must contain an appointment ID.
+                    && request.resource.data.appointmentId != ''
+
+                    // Appointment must belong to logged-in patient.
+                    && getAfter(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.patientId == request.auth.uid
+
+                    // Appointment and slot must use same doctor.
+                    && getAfter(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.doctorId == request.resource.data.doctorId
+
+                    // Appointment and slot must use same date.
+                    && getAfter(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.date == request.resource.data.date
+
+                    // Appointment and slot must use same time.
+                    && getAfter(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.time == request.resource.data.time
+
+                    // Appointment must point to this exact slot.
+                    && getAfter(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.slotId == slotId;
+
+      // Slots cannot be directly updated.
+      allow update: if false;
+
+      // Patient can delete only their own linked slot.
+      allow delete: if request.auth != null
+                    && resource.data.patientId == request.auth.uid
+                    && resource.data.appointmentId != ''
+                    && exists(
+                      /databases/$(database)/documents/appointments/$(resource.data.appointmentId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/appointments/$(resource.data.appointmentId)
+                    ).data.patientId == request.auth.uid
+                    && get(
+                      /databases/$(database)/documents/appointments/$(resource.data.appointmentId)
+                    ).data.slotId == slotId;
+    }
+
+
+    // ================================
+    // PRESCRIPTIONS
+    // ================================
+    match /prescriptions/{prescriptionId} {
+
+      // Patients can read their own prescriptions.
+      // Doctors can read only prescriptions they created.
+      allow read: if request.auth != null
+                  && (
+                    resource.data.patientId == request.auth.uid
+                    ||
+                    resource.data.doctorId == request.auth.uid
+                  );
+
+      // Doctors can create prescriptions only for
+      // appointments assigned to them.
+      allow create: if request.auth != null
+                    && request.resource.data.doctorId == request.auth.uid
+                    && exists(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.patientId == request.resource.data.patientId
+                    && exists(
+                      /databases/$(database)/documents/doctors/$(get(
+                        /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                      ).data.doctorId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/doctors/$(get(
+                        /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                      ).data.doctorId)
+                    ).data.uid == request.auth.uid;
+
+      // Prescriptions cannot be modified or deleted.
+      allow update, delete: if false;
+    }
+
+
+    // ================================
+    // BILLS
+    // ================================
+    match /bills/{billId} {
+
+      // Patients can read their own bills.
+      allow read: if request.auth != null
+                  && resource.data.patientId == request.auth.uid;
+
+      // Admins can read all bills.
+      allow read: if request.auth != null
+                  && exists(
+                    /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                  )
+                  && get(
+                    /databases/$(database)/documents/adminUsers/$(request.auth.uid)
+                  ).data.role == 'admin';
+
+      // Doctors can create bills only for appointments
+      // assigned to them.
+      allow create: if request.auth != null
+                    && request.resource.data.appointmentId != ''
+                    && exists(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                    ).data.patientId == request.resource.data.patientId
+                    && exists(
+                      /databases/$(database)/documents/doctors/$(get(
+                        /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                      ).data.doctorId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/doctors/$(get(
+                        /databases/$(database)/documents/appointments/$(request.resource.data.appointmentId)
+                      ).data.doctorId)
+                    ).data.uid == request.auth.uid;
+
+      // Bills cannot be modified or deleted.
+      allow update, delete: if false;
+    }
+
+  }
+}
